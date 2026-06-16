@@ -1,6 +1,6 @@
 # HOA MCP Server
 
-A Home Assistant custom component that runs an MCP (Model Context Protocol) server over SSE, exposing device control and web search tools to AI agents running in [Odysseus](https://github.com/pewdiepie-archdaemon/odysseus) with Ollama.
+A Home Assistant custom component that runs an MCP (Model Context Protocol) server over SSE, exposing device control, media, TTS, and weather tools to AI agents running in [Odysseus](https://github.com/pewdiepie-archdaemon/odysseus) with Ollama. Web search is handled by Odysseus natively — no duplication needed.
 
 ## What it does
 
@@ -16,7 +16,6 @@ Installs as an HA component. Odysseus connects to it as an SSE MCP server. The O
 | `media_control` | Pause, next, previous, stop, volume |
 | `speak` | TTS a message on a media_player |
 | `get_weather` | Current conditions from HA weather entity |
-| `search_web` | SearXNG web search for real-time knowledge |
 
 ## Installation
 
@@ -26,8 +25,7 @@ Installs as an HA component. Odysseus connects to it as an SSE MCP server. The O
 2. Add `https://github.com/thomasesr/HOA-MCP`, category **Integration**
 3. Search "HOA MCP Server" → Download
 4. Restart Home Assistant
-5. Settings → Integrations → Add → **HOA MCP Server**
-6. Enter your SearXNG URL (e.g. `http://your-odysseus-host:8080`)
+5. Settings → Integrations → Add → **HOA MCP Server** → Submit
 
 ### Manual
 
@@ -49,5 +47,4 @@ The `/hoa_mcp/sse` and `/hoa_mcp/messages` endpoints are unauthenticated by defa
 ## Requirements
 
 - Home Assistant 2024.1+
-- SearXNG instance (can reuse the one bundled with Odysseus)
 - Odysseus with an Ollama model configured

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-HOA-MCP is a Home Assistant custom component (HACS-compatible) that runs an MCP server over SSE inside HA. It gives Odysseus + Ollama agents voice-assistant-style tools: device control, media, TTS, weather, and web search.
+HOA-MCP is a Home Assistant custom component (HACS-compatible) that runs an MCP server over SSE inside HA. It gives Odysseus + Ollama agents voice-assistant-style tools: device control, media, TTS, and weather. Web search is handled by Odysseus natively.
 
 ## Structure
 
@@ -12,13 +12,12 @@ HOA-MCP is a Home Assistant custom component (HACS-compatible) that runs an MCP 
 custom_components/hoa_mcp/
 ├── __init__.py          # async_setup_entry / async_unload_entry
 ├── manifest.json        # HA component metadata
-├── config_flow.py       # UI config (SearXNG URL)
+├── config_flow.py       # UI config (zero-field, one-click setup)
 ├── const.py             # constants
 ├── server.py            # MCP SSE server + aiohttp views
 └── tools/
     ├── __init__.py      # tool registry + dispatcher
     ├── devices.py       # list_devices, get_entity_state, control_device, set_light, play_media, media_control
-    ├── search.py        # search_web (SearXNG)
     └── voice.py         # speak (TTS), get_weather
 ```
 
@@ -33,7 +32,7 @@ Odysseus connects via: **SSE transport → `http://ha-host:8123/hoa_mcp/sse`**
 
 ## Adding a new tool
 
-1. Add the JSON schema dict to `DEVICE_TOOLS` / `SEARCH_TOOLS` / `VOICE_TOOLS` in the right module
+1. Add the JSON schema dict to `DEVICE_TOOLS` / `VOICE_TOOLS` in the right module
 2. Add a handler branch in `call_*_tool()` in the same module
 3. That's it — `tools/__init__.py` auto-aggregates everything
 

@@ -3,23 +3,7 @@
     "step": {
       "user": {
         "title": "HOA MCP Server",
-        "description": "Exposes Home Assistant device control and web search to Odysseus AI agents via MCP over SSE.",
-        "data": {
-          "searxng_url": "SearXNG URL"
-        },
-        "data_description": {
-          "searxng_url": "Base URL of your SearXNG instance (e.g. http://localhost:8080)"
-        }
-      }
-    }
-  },
-  "options": {
-    "step": {
-      "init": {
-        "title": "HOA MCP Server Options",
-        "data": {
-          "searxng_url": "SearXNG URL"
-        }
+        "description": "Exposes Home Assistant device control, media, TTS, and weather to Odysseus AI agents via MCP over SSE. Web search is handled by Odysseus natively."
       }
     }
   }
