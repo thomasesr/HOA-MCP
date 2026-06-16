@@ -7,7 +7,7 @@ from typing import Literal
 import aiohttp
 from homeassistant.components import conversation
 from homeassistant.components.conversation import ConversationInput, ConversationResult
-from homeassistant.components.intent import IntentResponse
+from homeassistant.helpers.intent import IntentResponse
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
