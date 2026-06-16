@@ -23,7 +23,8 @@ async def obtain_token(url: str, username: str, password: str) -> str:
     """
     base = url.rstrip("/")
     try:
-        async with aiohttp.ClientSession() as session:
+        jar = aiohttp.CookieJar(unsafe=True)  # allow cookies from bare IP addresses
+        async with aiohttp.ClientSession(cookie_jar=jar) as session:
             # Step 1 — login, capture session cookie
             login_resp = await session.post(
                 f"{base}/api/auth/login",
