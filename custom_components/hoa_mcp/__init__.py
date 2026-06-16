@@ -1,6 +1,6 @@
 """HOA MCP Server — Home Assistant custom component."""
 
-from homeassistant.components import conversation
+from homeassistant.components import conversation as ha_conversation
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
@@ -26,12 +26,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Register conversation agent for HA Assist pipeline
     agent = HoaMcpConversationAgent(hass, entry)
-    conversation.async_set_agent(hass, entry, agent)
+    ha_conversation.async_set_agent(hass, entry, agent)
 
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    conversation.async_unset_agent(hass, entry)
+    ha_conversation.async_unset_agent(hass, entry)
     hass.data[DOMAIN].pop(entry.entry_id, None)
     return True
