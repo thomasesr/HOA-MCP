@@ -4,7 +4,6 @@ import difflib
 import json
 import logging
 import re
-from datetime import datetime
 from typing import Literal
 
 import aiohttp
@@ -12,6 +11,7 @@ from homeassistant.components import conversation
 from homeassistant.components.conversation import ConversationInput, ConversationResult
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.intent import IntentResponse
+from homeassistant.util import dt as dt_util
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
@@ -20,42 +20,43 @@ from .const import CONF_MODEL, CONF_ODYSSEUS_TOKEN, CONF_ODYSSEUS_URL
 logger = logging.getLogger(__name__)
 
 _MAX_ITERATIONS = 3
-_WEB_CONTEXT_LIMIT = 1500  # chars sent back to LLM from web search
+_WEB_CONTEXT_LIMIT = 1500
 
 _SYSTEM_PROMPT = """\
 You are a voice assistant for Home Assistant. Always reply in the same language as the user.
 
-You MUST reply with a single JSON object — no other text, no markdown.
+You MUST reply with a single JSON object — no other text, no markdown, no explanation outside the JSON.
 
-You have access to these actions. Use them in order — look up data BEFORE answering:
+You have four actions. Choose carefully:
 
-1. Search HA entities by name (use this for any device/sensor/weather question):
-{"action":"search_entities","query":"<user's device name>","domain":"<light|switch|weather|climate|media_player|sensor|cover|fan|input_boolean|all>"}
+1. search_entities — use this BEFORE answering any question about a device, sensor, or weather state:
+{"action":"search_entities","query":"<device name as the user said it>","domain":"<light|switch|weather|climate|media_player|sensor|cover|fan|input_boolean|all>"}
 
-2. Web search (use for current events, facts you don't know, real-time data not in HA):
-{"action":"web_search","query":"<search query>"}
+2. web_search — use this BEFORE answering questions about current events, sports, news, or real-time facts not in HA:
+{"action":"web_search","query":"<concise search query>"}
 
-3. Execute a Home Assistant service (only after you have the entity_id from search_entities):
-{"action":"call_service","domain":"<domain>","service":"<service>","entity_id":"<entity_id>","response":"<spoken confirmation>"}
+3. call_service — use this to control a device (only after receiving entity_id from search_entities):
+{"action":"call_service","domain":"<domain>","service":"<service>","entity_id":"<entity_id>","response":"<spoken confirmation in user's language>"}
 Optional extra fields: "brightness" (0-255), "rgb_color" ([r,g,b]), "color_temp", "volume_level" (0.0-1.0), "hvac_mode", "temperature"
 
-4. Answer directly (only when you already know the answer with certainty — date/time, math, etc.):
-{"action":"none","response":"<answer>"}
+4. none — use this only when you already have all the information needed to answer (date/time from context, tool results already provided):
+{"action":"none","response":"<full spoken answer in user's language>"}
 
-Rules:
-- NEVER guess entity states, weather, or real-time data — use search_entities first.
-- NEVER guess current events or sports results — use web_search first.
-- After receiving tool results, respond with call_service or none — do NOT search again.
-- Date and time are provided in context — no search needed for those.\
+STRICT RULES:
+- The "response" field is MANDATORY in call_service and none. It must be a complete spoken sentence.
+- Date and time are in the context — NEVER search for them, use action none directly.
+- NEVER guess device states or weather — always search_entities first.
+- After receiving tool results, you MUST respond with call_service or none — do NOT search again.
+- If search_entities returns no matches, respond with none and say the device was not found.\
 """
 
 
 async def _build_context(hass: HomeAssistant, user_input: ConversationInput) -> str:
     lines: list[str] = []
 
-    # Date / time
-    now = datetime.now()
-    lines.append(f"Date/time: {now.strftime('%A, %B %d %Y, %H:%M')}")
+    # HA-timezone-aware date/time (fixes wrong weekday from UTC mismatch)
+    now = dt_util.now()
+    lines.append(f"Date/time: {now.strftime('%A, %B %d %Y, %H:%M %Z')}")
 
     # HA location
     loc = hass.config.location_name
@@ -91,7 +92,6 @@ async def _build_context(hass: HomeAssistant, user_input: ConversationInput) -> 
 
 
 def _search_entities(hass: HomeAssistant, query: str, domain: str) -> list[dict]:
-    """Fuzzy-match query against HA entity friendly names and entity_ids."""
     query_lower = query.lower()
     candidates = (
         hass.states.async_all(domain) if domain and domain != "all"
@@ -103,7 +103,6 @@ def _search_entities(hass: HomeAssistant, query: str, domain: str) -> list[dict]
         friendly = state.attributes.get("friendly_name", "") or ""
         eid = state.entity_id
 
-        # Score: exact > startswith > contains > fuzzy
         target = friendly.lower()
         if target == query_lower or eid == query_lower:
             score = 1.0
@@ -116,20 +115,13 @@ def _search_entities(hass: HomeAssistant, query: str, domain: str) -> list[dict]
             if score < 0.4:
                 continue
 
-        entry: dict = {
-            "entity_id": eid,
-            "name": friendly or eid,
-            "state": state.state,
-        }
-        # Include useful attributes
-        attrs = state.attributes
+        entry: dict = {"entity_id": eid, "name": friendly or eid, "state": state.state}
         for key in ("temperature", "temperature_unit", "humidity",
                     "brightness", "color_temp", "rgb_color",
                     "current_temperature", "hvac_mode", "volume_level",
                     "media_title", "media_artist"):
-            if key in attrs:
-                entry[key] = attrs[key]
-
+            if key in state.attributes:
+                entry[key] = state.attributes[key]
         results.append((score, entry))
 
     results.sort(key=lambda x: x[0], reverse=True)
@@ -137,12 +129,10 @@ def _search_entities(hass: HomeAssistant, query: str, domain: str) -> list[dict]
 
 
 def _extract_json(text: str) -> dict | None:
-    """Extract first JSON object from text, stripping markdown fences."""
-    # Strip ```json ... ``` or ``` ... ```
+    # Strip markdown fences
     m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
     if m:
         text = m.group(1)
-    # Find outermost { }
     start = text.find("{")
     if start == -1:
         return None
@@ -160,8 +150,23 @@ def _extract_json(text: str) -> dict | None:
     return None
 
 
+def _build_message(system: str, context: str, user_text: str,
+                   tool_results: list[str]) -> str:
+    """Rebuild the full message for every Odysseus call — keeps context in every iteration."""
+    parts = [system, f"\n[Context]\n{context}", f"\n[User] {user_text}"]
+    for tr in tool_results:
+        parts.append(f"\n{tr}")
+    if tool_results:
+        parts.append(
+            "\nYou now have the tool results above. "
+            "Respond with your final JSON (call_service or none). "
+            "The 'response' field MUST contain a complete spoken sentence."
+        )
+    return "\n".join(parts)
+
+
 class HoaMcpConversationAgent(conversation.AbstractConversationAgent):
-    """Voice assistant: multi-step reasoning loop — no hallucination, on-demand lookups."""
+    """Voice assistant: multi-step reasoning — no hallucination, on-demand lookups."""
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         self.hass = hass
@@ -180,28 +185,22 @@ class HoaMcpConversationAgent(conversation.AbstractConversationAgent):
         token = self.entry.data.get(CONF_ODYSSEUS_TOKEN, "")
         model = (self.entry.data.get(CONF_MODEL) or "").strip()
 
-        context = await _build_context(self.hass, user_input)
+        base_context = await _build_context(self.hass, user_input)
+        user_text    = user_input.text
+
         headers = {"Content-Type": "application/json"}
         if token:
             headers["Authorization"] = f"Bearer {token}"
 
-        # Build initial message — system prompt + context + user utterance
-        # Each iteration appends tool results as additional context lines
-        current_message = (
-            f"{_SYSTEM_PROMPT}\n\n"
-            f"[Context]\n{context}\n\n"
-            f"[User] {user_input.text}"
-        )
-
+        tool_results: list[str] = []
         response_text = "Não consegui contactar o Odysseus."
-        odysseus_session: str | None = None
 
         for iteration in range(_MAX_ITERATIONS):
-            payload: dict = {"message": current_message}
+            # Every iteration rebuilds the full message — LLM always has system prompt + context
+            message = _build_message(_SYSTEM_PROMPT, base_context, user_text, tool_results)
+            payload: dict = {"message": message}
             if model:
                 payload["model"] = model
-            if odysseus_session:
-                payload["session"] = odysseus_session
 
             try:
                 async with aiohttp.ClientSession() as http:
@@ -218,23 +217,24 @@ class HoaMcpConversationAgent(conversation.AbstractConversationAgent):
                             break
                         data = await resp.json()
                         raw = (data.get("response") or "").strip()
-                        odysseus_session = data.get("session_id") or odysseus_session
             except aiohttp.ClientError as exc:
                 logger.error("Cannot reach Odysseus: %s", exc)
-                response_text = "Não consegui contactar o Odysseus."
                 break
 
             parsed = _extract_json(raw)
             if parsed is None:
-                # LLM ignored JSON format — return as plain text
                 logger.warning("Non-JSON from Odysseus (iter %d): %s", iteration, raw[:200])
                 response_text = raw
                 break
 
             action = parsed.get("action", "none")
+            logger.debug("Iteration %d action=%s", iteration, action)
 
             if action == "none":
-                response_text = parsed.get("response") or raw
+                response_text = parsed.get("response") or ""
+                if not response_text:
+                    # LLM returned none with no response — extract any text from raw
+                    response_text = re.sub(r'\{.*?\}', '', raw, flags=re.DOTALL).strip() or raw
                 break
 
             if action == "call_service":
@@ -245,29 +245,29 @@ class HoaMcpConversationAgent(conversation.AbstractConversationAgent):
                 query  = parsed.get("query", "")
                 domain = parsed.get("domain", "all")
                 matches = _search_entities(self.hass, query, domain)
-                tool_result = json.dumps(matches, ensure_ascii=False)
-                logger.debug("search_entities %r → %d matches", query, len(matches))
-                current_message = (
-                    f"[Tool result: search_entities query={query!r}]\n"
-                    f"{tool_result}\n\n"
-                    f"Now give your final response (call_service or none)."
-                )
-                odysseus_session = None  # start fresh turn with tool result
+                result_str = json.dumps(matches, ensure_ascii=False)
+                logger.debug("search_entities %r → %d matches: %s", query, len(matches), result_str[:300])
+                if matches:
+                    tool_results.append(
+                        f"[search_entities result for '{query}' in domain '{domain}']\n{result_str}"
+                    )
+                else:
+                    tool_results.append(
+                        f"[search_entities result for '{query}' in domain '{domain}']\n"
+                        f"No entities found matching this query."
+                    )
                 continue
 
             if action == "web_search":
                 query = parsed.get("query", "")
-                tool_result = await self._web_search(url, query, headers)
-                logger.debug("web_search %r", query)
-                current_message = (
-                    f"[Tool result: web_search query={query!r}]\n"
-                    f"{tool_result}\n\n"
-                    f"Now give your final response (none)."
+                context_str = await self._web_search(url, query, headers)
+                logger.debug("web_search %r → %d chars", query, len(context_str))
+                tool_results.append(
+                    f"[web_search result for '{query}']\n{context_str}"
                 )
-                odysseus_session = None
                 continue
 
-            # Unknown action — treat as plain response
+            # Unknown action
             response_text = parsed.get("response") or raw
             break
 
