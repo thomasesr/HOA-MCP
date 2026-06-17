@@ -1,7 +1,6 @@
 """Odysseus conversation agent — bridges HA Assist pipeline to Odysseus."""
 
 import logging
-import uuid
 from typing import Literal
 
 import aiohttp
@@ -15,18 +14,15 @@ from .const import CONF_MODEL, CONF_ODYSSEUS_TOKEN, CONF_ODYSSEUS_URL
 
 logger = logging.getLogger(__name__)
 
-# Keep last N turns per conversation to avoid unbounded context growth
-_MAX_HISTORY_TURNS = 10
-
 
 class HoaMcpConversationAgent(conversation.AbstractConversationAgent):
-    """Sends Assist pipeline text to Odysseus and returns the response."""
+    """Sends Assist pipeline text to Odysseus /api/v1/chat and returns the response."""
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         self.hass = hass
         self.entry = entry
-        # conversation_id → list of {"role": ..., "content": ...}
-        self._history: dict[str, list[dict]] = {}
+        # HA conversation_id → Odysseus session_id (Odysseus owns the history)
+        self._sessions: dict[str, str] = {}
 
     @property
     def attribution(self) -> dict[str, str] | None:
@@ -41,25 +37,16 @@ class HoaMcpConversationAgent(conversation.AbstractConversationAgent):
         token = self.entry.data.get(CONF_ODYSSEUS_TOKEN, "")
         model = (self.entry.data.get(CONF_MODEL) or "").strip()
 
-        # Resolve or create conversation session
-        conv_id = user_input.conversation_id or str(uuid.uuid4())
-        history = self._history.setdefault(conv_id, [])
-
-        # Append current user message
-        history.append({"role": "user", "content": user_input.text})
-
-        # Trim to max history (keep pairs to preserve turn structure)
-        if len(history) > _MAX_HISTORY_TURNS * 2:
-            history[:] = history[-(  _MAX_HISTORY_TURNS * 2):]
+        conv_id = user_input.conversation_id or ""
+        odysseus_session = self._sessions.get(conv_id)
 
         headers = {"Content-Type": "application/json"}
         if token:
             headers["Authorization"] = f"Bearer {token}"
 
-        payload: dict = {
-            "messages": list(history),
-            "stream": False,
-        }
+        payload: dict = {"message": user_input.text}
+        if odysseus_session:
+            payload["session"] = odysseus_session
         if model:
             payload["model"] = model
 
@@ -67,7 +54,7 @@ class HoaMcpConversationAgent(conversation.AbstractConversationAgent):
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.post(
-                    f"{url}/v1/chat/completions",
+                    f"{url}/api/v1/chat",
                     json=payload,
                     headers=headers,
                     timeout=aiohttp.ClientTimeout(total=60),
@@ -78,18 +65,17 @@ class HoaMcpConversationAgent(conversation.AbstractConversationAgent):
                         response_text = f"Error communicating with Odysseus (HTTP {resp.status})."
                     else:
                         data = await resp.json()
-                        response_text = (
-                            data.get("choices", [{}])[0]
-                            .get("message", {})
-                            .get("content", "")
-                            .strip()
-                        ) or "No response from Odysseus."
+                        response_text = (data.get("response") or "").strip() or "No response from Odysseus."
+                        # Track the Odysseus session for subsequent turns
+                        new_session = data.get("session_id")
+                        if new_session and conv_id:
+                            self._sessions[conv_id] = new_session
+                        elif new_session and not conv_id:
+                            conv_id = new_session
+                            self._sessions[conv_id] = new_session
         except aiohttp.ClientError as exc:
             logger.error("Cannot reach Odysseus: %s", exc)
             response_text = "Cannot reach Odysseus. Check the URL in the integration settings."
-
-        # Append assistant turn to history
-        history.append({"role": "assistant", "content": response_text})
 
         intent_response = IntentResponse(language=user_input.language)
         intent_response.async_set_speech(response_text)
